@@ -6,7 +6,8 @@
    ```c
    #include <windows.h>
 
-   int main() {
+   int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
+   {
        FreeConsole(); // 释放控制台
        // 你的代码逻辑
        return 0;
