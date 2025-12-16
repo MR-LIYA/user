@@ -1,14 +1,13 @@
 import os
 import shutil
-import subprocess
 import sys
+import ctypes
+import threading
+import subprocess
 import tkinter as tk
 from tkinter import filedialog, messagebox, Label, Entry, Button, Scrollbar, Toplevel, ttk
-import threading
-import ctypes
 
 # -------------------------- 底层修复：彻底消除tk空白窗口/闪烁 --------------------------
-# 强制Windows DPI感知（解决高分屏适配）
 try:
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
 except:
@@ -21,11 +20,10 @@ def get_singleton_root():
     """获取单例根窗口（初始化时完全隐藏，无任何显示/闪烁）"""
     global _root_instance
     if _root_instance is None:
-        # 创建根窗口但完全隐藏，杜绝tk空白窗口
         _root_instance = tk.Tk()
-        _root_instance.withdraw()  # 彻底隐藏根窗口
-        _root_instance.attributes("-alpha", 0.0)  # 全透明
-        _root_instance.update_idletasks()  # 冻结绘制
+        _root_instance.withdraw()
+        _root_instance.attributes("-alpha", 0.0)
+        _root_instance.update_idletasks()
     return _root_instance
 
 def fix_tkinter_visibility():
@@ -59,14 +57,30 @@ def center_window(window, width, height):
     screen_height = window.winfo_screenheight()
     x = (screen_width - width) // 2
     y = (screen_height - height) // 2
+    if x < 0:
+        x = 0
+    if y < 0:
+        y = 0
     window.geometry(f"{width}x{height}+{x}+{y}")
+
+def get_adjusted_size(window, width, height):
+    """根据屏幕比例动态调整窗口大小"""
+    screen_width = window.winfo_screenwidth()
+    screen_height = window.winfo_screenheight()
+
+    scale_x = min(1.0, screen_width / width)
+    scale_y = min(1.0, screen_height / height)
+
+    min_width = max(400, int(width * scale_x))
+    min_height = max(300, int(height * scale_y))
+
+    return min_width, min_height
 
 def run_command(args, **kwargs):
     """执行命令并隐藏控制台窗口（仅Windows）"""
     if sys.platform.startswith('win32'):
-        # 添加Windows特有的创建标志，隐藏子进程控制台
         kwargs.setdefault('creationflags', subprocess.CREATE_NO_WINDOW)
-    return subprocess.run(args,** kwargs)
+    return subprocess.run(args, **kwargs)
 
 def check_module_installed(python_path, module_name):
     """检查指定Python环境是否安装了目标模块"""
@@ -82,50 +96,82 @@ def check_module_installed(python_path, module_name):
     except subprocess.CalledProcessError:
         return False
 
-def find_and_move_pip_autoremove(python_path):
-    """
-    自动查找pip-autoremove.py并移动到正确路径：
-    - 全局环境：Scripts → Lib\\site-packages
-    - 虚拟环境：Scripts → Lib\\site-packages
-    """
-    python_dir = os.path.dirname(python_path)
-    scripts_dir = os.path.join(python_dir, "Scripts")
-    lib_dir = os.path.join(python_dir, "Lib")
-    site_packages_dir = os.path.join(lib_dir, "site-packages")
-
-    # 查找pip-autoremove.py
-    source_file = None
-    if os.path.exists(scripts_dir):
-        for file in os.listdir(scripts_dir):
-            if file.lower() == "pip-autoremove.py":
-                source_file = os.path.join(scripts_dir, file)
-                break
-    if not source_file:
-        return False, "未找到 pip-autoremove.py 文件（Scripts目录下）"
-
-    # 判断环境类型
-    is_venv = False
-    if os.path.exists(site_packages_dir):
-        if "Program Files" not in python_dir and "AppData" not in python_dir:
-            is_venv = True
-
-    # 目标路径
-    target_dir = site_packages_dir if is_venv else lib_dir
-    target_file = os.path.join(target_dir, "pip-autoremove.py")
-
-    # 移动文件
+def is_admin():
+    """检查是否以管理员身份运行"""
     try:
-        if os.path.exists(target_file):
-            os.remove(target_file)
-        shutil.move(source_file, target_dir)
-        if os.path.exists(target_file):
-            return True, f"成功移动到：{target_dir}"
-        else:
-            return False, "文件移动后未找到目标文件"
-    except PermissionError:
-        return False, "权限不足！请以管理员身份运行"
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        return False
+
+def run_as_admin():
+    """尝试以管理员身份重新启动程序"""
+    ctypes.windll.shell32.ShellExecuteW(
+        None, "runas", sys.executable, "", None, 1)
+    sys.exit()
+
+def find_and_move_script(python_path, script_name):
+    """
+    将指定的 .py 脚本移动到 site-packages 或 Scripts 目录，使其可被 python -m 调用
+    """
+
+    # 统一路径分隔符+验证解释器路径
+    python_path = os.path.normpath(python_path)
+    if not os.path.exists(python_path) or not os.path.isfile(python_path):
+        return False, f"无效的Python解释器路径：{python_path}"
+
+    # 步骤1：推导Scripts目录
+    interpreter_dir = os.path.dirname(python_path)
+    if os.path.basename(interpreter_dir).lower() == "scripts":
+        scripts_dir = interpreter_dir
+        env_root = os.path.normpath(os.path.join(scripts_dir, ".."))
+    else:
+        scripts_dir = os.path.normpath(os.path.join(interpreter_dir, "Scripts"))
+        env_root = interpreter_dir
+
+    # 步骤2：查找源文件（固定名称）
+    source_file = None
+    if os.path.isdir(scripts_dir):
+        for file in os.listdir(scripts_dir):
+            if file.lower() == script_name.lower():  # 区分大小写兼容
+                source_file = os.path.normpath(os.path.join(scripts_dir, file))
+                break
+
+    if not source_file:
+        return False, f"未找到 {script_name}（搜索路径：{scripts_dir}）"
+
+    # 步骤3：推导Lib目录和目标路径
+    lib_dir = os.path.normpath(os.path.join(env_root, "Lib"))
+    site_pkgs_dir = os.path.normpath(os.path.join(lib_dir, "site-packages"))
+
+    # 自动创建 site-packages（若不存在）
+    if not os.path.exists(site_pkgs_dir):
+        try:
+            os.makedirs(site_pkgs_dir, exist_ok=True)
+        except Exception as e:
+            return False, f"创建 site-packages 失败：{str(e)}"
+
+    target_file = os.path.join(site_pkgs_dir, script_name)
+
+    try:
+        # 如果不是管理员权限，弹出 UAC 确认
+        if not is_admin():
+            result = messagebox.askyesno("权限不足", "需要管理员权限才能移动并删除源文件。\n请确认以管理员身份运行？")
+            if result:
+                run_as_admin()
+            return False, "需要管理员权限才能继续"
+
+        # 使用 shutil 移动文件
+        shutil.move(source_file, target_file)
+
+        # 删除源文件
+        try:
+            os.remove(source_file)
+            return True, f"✅ 成功移动并删除源文件：{target_file}"
+        except Exception as e:
+            return False, f"❌ 移动成功但删除源文件失败：{str(e)}"
+
     except Exception as e:
-        return False, f"移动失败：{str(e)}"
+        return False, f"❌ 移动失败：{str(e)}"
 
 # -------------------------- 进度条窗口类 --------------------------
 class ProgressWindow:
@@ -149,7 +195,7 @@ class ProgressWindow:
         self.progress_bar.pack(fill=tk.X, padx=20, pady=20)
 
         # 当前操作提示
-        self.label = Label(self.top, text="准备中...", font=("微软雅黑", 10))
+        self.label = tk.Label(self.top, text="准备中...", font=("微软雅黑", 10))
         self.label.pack(pady=5)
 
         self.current = 0
@@ -210,7 +256,7 @@ class InstallUpgradeWindow:
             Label(self.top, text="包名（单个/多个用逗号分隔）+ 版本号（格式：包名==版本号，如 requests==2.31.0）：", 
                   font=("微软雅黑", 10)).pack(pady=8)
             
-        self.pkg_entry = Entry(self.top, font=("微软雅黑", 12), width=55)
+        self.pkg_entry = tk.Entry(self.top, font=("微软雅黑", 12), width=55)
         self.pkg_entry.pack(padx=20, pady=5)
         
         # 如果有选中的包，自动填充
@@ -233,7 +279,7 @@ class InstallUpgradeWindow:
         btn_frame = tk.Frame(self.top)
         btn_frame.pack(pady=15)
         
-        execute_btn = Button(
+        execute_btn = tk.Button(
             btn_frame, 
             text="执行安装/升级", 
             command=self.execute_operation,
@@ -242,7 +288,7 @@ class InstallUpgradeWindow:
         )
         execute_btn.pack(side=tk.LEFT, padx=10)
         
-        cancel_btn = Button(
+        cancel_btn = tk.Button(
             btn_frame, 
             text="取消", 
             command=self.top.destroy,
@@ -317,13 +363,13 @@ class PipManagerApp:
         self.setup_ui()
         
         # 3. 窗口居中（仅计算位置，无绘制）
-        center_window(self.root, 700, 500)
+        adjusted_width, adjusted_height = get_adjusted_size(self.root, 700, 500)
+        center_window(self.root, adjusted_width, adjusted_height)
         
         # 4. 绑定关闭事件
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         
         # 5. 分步显示主界面（零闪烁）
-        # 先启用交互，再恢复透明度，无任何中间态
         self.root.after(100, lambda: self.root.attributes("-disabled", False))
         self.root.after(150, lambda: self.root.attributes("-alpha", 1.0))
         self.root.deiconify()  # 显示根窗口（此时已完成所有绘制）
@@ -542,9 +588,9 @@ class PipManagerApp:
                 if method == "pip":
                     cmd = [self.python_path, "-m", "pip", "uninstall", "-y", pkg]
                 else:
-                    # 检查并修复pip-autoremove
+                    # 检查并修复 pip-autoremove
                     if not check_module_installed(self.python_path, "pip_autoremove"):
-                        success, msg = find_and_move_pip_autoremove(self.python_path)
+                        success, msg = find_and_move_script(self.python_path, "pip_autoremove.py")
                         if not success:
                             self.add_batch_result(pkg, False, msg)
                             progress_win.update(f"卸载失败: {pkg} (缺少pip-autoremove)")
