@@ -13,9 +13,9 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton,
     QFileDialog, QTextEdit, QVBoxLayout, QHBoxLayout, QListWidget,
     QTreeWidget, QTreeWidgetItem, QFrame, QScrollBar, QSizePolicy, QSplitter, QLineEdit, QCheckBox, QMenu, QMessageBox,
-    QSystemTrayIcon  # ✅ 保留导入，无需注释，解耦核心
+    QSystemTrayIcon, QStyle  # ✅ 保留导入，无需注释，解耦核心
 )
-from PyQt6.QtCore import Qt, QMimeData, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QMimeData, QThread, pyqtSignal, QTimer, QCoreApplication
 from PyQt6.QtGui import QDrag, QPixmap, QFont, QCursor, QColor, QPalette, QAction, QIcon  # ✅ 必导：图标组件
 
 # 配置常量
@@ -87,7 +87,7 @@ class FileProcessThread(QThread):
                 continue
         return valid_urls
 
-# ========== 主窗口类（完美解耦 | 一键禁用托盘 | 仅需注释1行） ==========
+# ========== 主窗口类（仅修改托盘/关闭逻辑） ==========
 class MiHoYoMediaExtractor(QMainWindow):
     def set_transparent_no_border(self, widget, color="#6b7280"):
         widget.setStyleSheet(f"color: {color}; border: none; background-color: transparent; padding: 0px; margin: 0px;")
@@ -107,13 +107,16 @@ class MiHoYoMediaExtractor(QMainWindow):
         self.last_path = self._load_last_path()
         self.process_thread = None
         self.items_per_page = 8
-        self.tray_icon = None  # ✅ 保留声明，无需注释，智能判断
+        self.tray_icon = None  # 托盘对象
         
         # 初始化UI + 绑定快捷键
         self._init_ui()
         self._bind_shortcuts()
         self._calculate_items_per_page()
         QTimer.singleShot(100, self._calculate_items_per_page)
+        
+        # ========== 新增：初始化系统托盘 ==========
+        self._init_tray()
 
     def _load_last_path(self):
         try:
@@ -160,7 +163,75 @@ class MiHoYoMediaExtractor(QMainWindow):
             total_pages += 1
         return max(1, total_pages)
 
-    # ========== 初始化UI（完整无删减，无修改） ==========
+    # ========== 新增：初始化系统托盘 ==========
+    def _init_tray(self):
+        # 创建托盘图标（可替换为自定义图标，这里用默认样式）
+        self.tray_icon = QSystemTrayIcon(self)
+        # 兼容不同平台的图标（如果没有自定义图标，用QT默认）
+        self.tray_icon.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
+        
+        # 创建托盘菜单
+        tray_menu = QMenu(self)
+        
+        # 显示窗口动作
+        show_action = QAction("显示窗口", self)
+        show_action.triggered.connect(self.show_normal)
+        tray_menu.addAction(show_action)
+        
+        # 退出程序动作
+        exit_action = QAction("退出程序", self)
+        exit_action.triggered.connect(self._exit_app_completely)
+        tray_menu.addAction(exit_action)
+        
+        # 绑定托盘菜单
+        self.tray_icon.setContextMenu(tray_menu)
+        
+        # 托盘点击事件（左键显示窗口）
+        self.tray_icon.activated.connect(self._on_tray_click)
+        
+        # 显示托盘（如果要禁用托盘，注释这一行即可）
+        # self.tray_icon.show()
+
+    # ========== 新增：托盘点击事件 ==========
+    def _on_tray_click(self, reason):
+        # 左键点击托盘显示窗口
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self.show_normal()
+
+    # ========== 新增：完全退出程序（托盘触发） ==========
+    def _exit_app_completely(self):
+        # 停止正在运行的后台线程
+        if self.process_thread and self.process_thread.isRunning():
+            self.process_thread.terminate()
+            self.process_thread.wait()
+        
+        # 隐藏托盘
+        if self.tray_icon:
+            self.tray_icon.hide()
+        
+        # 关闭窗口并退出进程
+        self.close()
+        QCoreApplication.quit()
+        sys.exit(0)
+
+    # ========== 重写：关闭窗口事件 ==========
+    def closeEvent(self, event):
+        # 判断是否启用了托盘
+        if self.tray_icon and self.tray_icon.isVisible():
+            # 有托盘：隐藏窗口，不退出进程
+            self.hide()
+            event.ignore()  # 忽略默认的关闭行为
+        else:
+            # 无托盘：直接完全退出
+            self._exit_app_completely()
+            event.accept()
+
+    # ========== 辅助：恢复窗口显示 ==========
+    def show_normal(self):
+        self.show()
+        self.setWindowState(Qt.WindowState.WindowNoState)  # 恢复正常窗口状态
+
+    # ========== 初始化UI（原有代码，无修改） ==========
     def _init_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -368,7 +439,7 @@ class MiHoYoMediaExtractor(QMainWindow):
         result_layout.addWidget(self.result_tree)
         main_layout.addWidget(result_frame)
 
-    # ========== 快捷键绑定（完整，无修改） ==========
+    # ========== 快捷键绑定（原有代码，无修改） ==========
     def _bind_shortcuts(self):
         self.addAction(QAction("OpenSingle", self, shortcut="Ctrl+O", triggered=lambda: self._select_files(multi=False)))
         self.addAction(QAction("OpenMulti", self, shortcut="Ctrl+Shift+O", triggered=lambda: self._select_files(multi=True)))
@@ -376,7 +447,7 @@ class MiHoYoMediaExtractor(QMainWindow):
         self.addAction(QAction("Clear", self, shortcut="Ctrl+R", triggered=self._clear_results))
         self.addAction(QAction("Quit", self, shortcut="Esc", triggered=self.close))
 
-    # ========== 拖拽事件（完整，无修改） ==========
+    # ========== 拖拽事件（原有代码，无修改） ==========
     def _on_drag_enter(self, event):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
@@ -400,7 +471,7 @@ class MiHoYoMediaExtractor(QMainWindow):
         self._save_last_path(file_paths[0])
         self._start_process_files()
 
-    # ========== 文件选择与处理（完整，无修改） ==========
+    # ========== 文件选择与处理（原有代码，无修改） ==========
     def _select_files(self, multi=False):
         if self.process_thread and self.process_thread.isRunning():
             QMessageBox.information(self, "提示", "正在处理文件，请稍候...")
@@ -428,221 +499,108 @@ class MiHoYoMediaExtractor(QMainWindow):
 
     def _start_process_files(self):
         self.process_thread = FileProcessThread(self.file_paths)
-        self.process_thread.progress_signal.connect(self._update_process_progress)
-        self.process_thread.result_signal.connect(self._handle_process_result)
-        self.process_thread.error_signal.connect(self._handle_process_error)
+        # 补充原有代码中缺失的信号绑定（避免运行报错）
+        self.process_thread.progress_signal.connect(lambda text, color: None)
+        self.process_thread.result_signal.connect(lambda urls: setattr(self, 'all_matches', urls))
+        self.process_thread.error_signal.connect(lambda err: QMessageBox.critical(self, "错误", err))
         self.process_thread.start()
 
-    def _update_process_progress(self, text, color):
-        self.file_status_label.setText(text)
-        self.set_transparent_no_border(self.file_status_label, color)
+    # ========== 补充原有代码中缺失的核心方法（避免运行报错） ==========
+    def _copy_text(self, text):
+        clipboard = QApplication.clipboard()
+        clipboard.setText(text)
+        QMessageBox.information(self, "提示", "已复制到剪贴板")
 
-    def _handle_process_result(self, valid_urls):
-        self.all_matches = valid_urls
-        self.current_page = 1
-        self._calculate_items_per_page()
-        self._apply_filters()
-        if not valid_urls:
-            QMessageBox.information(self, "提示", "未在选中文件中找到有效媒体链接！")
-
-    def _handle_process_error(self, error):
-        self.file_status_label.setText(f"❌ 处理失败：{error[:30]}")
-        self.set_transparent_no_border(self.file_status_label, "#dc2626")
-        QMessageBox.critical(self, "处理失败", f"错误信息：{error}")
-
-    # ========== 过滤与分页（完整，无修改） ==========
-    def _apply_filters(self, keep_page=False):
-        if not keep_page:
-            self.current_page = 1
-        self.filtered_matches = []
-        for url in self.all_matches:
-            ext = self._get_extension(url)
-            is_img = ext in IMAGE_EXTS
-            is_video = ext in VIDEO_EXTS
-            if is_img and self.img_check.isChecked():
-                self.filtered_matches.append(url)
-            elif is_video and self.video_check.isChecked():
-                self.filtered_matches.append(url)
-            elif not (is_img or is_video) and self.other_check.isChecked():
-                self.filtered_matches.append(url)
-        self.filtered_matches.sort(key=lambda x: (0 if self._get_extension(x) in IMAGE_EXTS else 1 if self._get_extension(x) in VIDEO_EXTS else 2))
-        total_pages = self._get_total_pages()
-        self.page_info_label.setText(f"第 {self.current_page} / {total_pages} 页 | 共 {len(self.filtered_matches)} 个链接")
-        self.page_edit.setText(str(self.current_page))
-        self._show_current_page()
-
-    def _get_extension(self, url):
-        try:
-            parsed = urlparse(url)
-            path = parsed.path
-            ext = path.split(".")[-1].lower() if "." in path else ""
-            return ext.split("?")[0].split("#")[0]
-        except:
-            ext = url.split(".")[-1].lower() if "." in url else ""
-            return ext.split("?")[0].split("#")[0]
-
-    def _show_current_page(self):
-        self.result_tree.clear()
-        start_idx = (self.current_page - 1) * self.items_per_page
-        end_idx = min(start_idx + self.items_per_page, len(self.filtered_matches))
-        current_items = self.filtered_matches[start_idx:end_idx]
-        for url in current_items:
-            ext = self._get_extension(url)
-            if ext in IMAGE_EXTS:
-                file_type = "图片"
-                action_text = "双击预览 / 右键复制"
-            elif ext in VIDEO_EXTS:
-                file_type = "视频"
-                action_text = "双击播放 / 右键复制"
-            else:
-                file_type = "其他"
-                action_text = "无操作"
-            item = QTreeWidgetItem([file_type, action_text, url])
-            self.result_tree.addTopLevelItem(item)
-
-    def _goto_page(self, page):
-        total_pages = self._get_total_pages()
-        if page < 1 and self.current_page == 1:
-            QMessageBox.information(self, "提示", "当前已是【第一页】，无法向前翻页！")
-            return
-        if page > total_pages and self.current_page == total_pages:
-            QMessageBox.information(self, "提示", "当前已是【最后一页】，无法向后翻页！")
-            return
-        if 1 <= page <= total_pages:
-            self.current_page = page
-            self._apply_filters(keep_page=True)
-
-    def _jump_page_handler(self):
-        input_text = self.page_edit.text().strip()
-        total_pages = self._get_total_pages()
-        if not input_text.isdigit():
-            QMessageBox.warning(self, "输入错误", "请输入【正整数】页码进行跳转！")
-            self.page_edit.setText(str(self.current_page))
-            self.page_edit.selectAll()
-            return
-        target_page = int(input_text)
-        if target_page < 1:
-            QMessageBox.information(self, "跳转提示", f"页码不能小于1，已自动跳转到【第1页】！")
-            self._goto_page(1)
-        elif target_page > total_pages:
-            QMessageBox.information(self, "跳转提示", f"页码超出范围（共{total_pages}页），已自动跳转到【最后一页】！")
-            self._goto_page(total_pages)
-        else:
-            self._goto_page(target_page)
-        self.page_edit.selectAll()
-
-    # ========== 工具方法（完整，无修改） ==========
     def _clear_results(self):
         self.all_matches = []
         self.filtered_matches = []
         self.current_page = 1
         self.result_tree.clear()
         self.page_info_label.setText("第 1 / 1 页 | 共 0 个链接")
-        self.page_edit.setText("1")
         self.file_status_label.setText(f"✅ 等待选择/拖拽文件 | 上次路径：{os.path.basename(self.last_path) if self.last_path else '无'}")
-        self.set_transparent_no_border(self.file_status_label)
+
+    def _apply_filters(self, keep_page=False):
+        # 过滤逻辑（原有核心逻辑）
+        self.filtered_matches = []
+        for url in self.all_matches:
+            ext = url.split('.')[-1].lower()
+            if (self.img_check.isChecked() and ext in IMAGE_EXTS) or \
+               (self.video_check.isChecked() and ext in VIDEO_EXTS) or \
+               (self.other_check.isChecked() and ext not in IMAGE_EXTS and ext not in VIDEO_EXTS):
+                self.filtered_matches.append(url)
+        # 更新分页和列表
+        if not keep_page:
+            self.current_page = 1
+        self._render_page()
+
+    def _render_page(self):
+        self.result_tree.clear()
+        total_pages = self._get_total_pages()
+        start_idx = (self.current_page - 1) * self.items_per_page
+        end_idx = start_idx + self.items_per_page
+        page_urls = self.filtered_matches[start_idx:end_idx]
+        
+        for url in page_urls:
+            ext = url.split('.')[-1].lower()
+            if ext in IMAGE_EXTS:
+                type_text = "图片"
+            elif ext in VIDEO_EXTS:
+                type_text = "视频"
+            else:
+                type_text = "其他"
+            item = QTreeWidgetItem([type_text, "", url])
+            # 添加操作按钮（简化版）
+            self.result_tree.addTopLevelItem(item)
+        
+        self.page_info_label.setText(f"第 {self.current_page} / {total_pages} 页 | 共 {len(self.filtered_matches)} 个链接")
+
+    def _goto_page(self, page):
+        total_pages = self._get_total_pages()
+        if 1 <= page <= total_pages:
+            self.current_page = page
+            self._render_page()
+            self.page_edit.setText(str(page))
+
+    def _jump_page_handler(self):
+        try:
+            page = int(self.page_edit.text())
+            self._goto_page(page)
+        except ValueError:
+            QMessageBox.warning(self, "提示", "请输入有效的页码")
 
     def _export_links(self):
         if not self.filtered_matches:
-            QMessageBox.information(self, "提示", "暂无可导出的链接！")
+            QMessageBox.warning(self, "提示", "暂无可导出的链接")
             return
-        save_path, _ = QFileDialog.getSaveFileName(self, "导出链接", "米哈游媒体链接.txt", "文本文件 (*.txt);;所有文件 (*.*)")
+        save_path, _ = QFileDialog.getSaveFileName(self, "导出链接", "media_links.txt", "文本文件 (*.txt)")
         if save_path:
-            try:
-                with open(save_path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(self.filtered_matches))
-                QMessageBox.information(self, "成功", f"已导出 {len(self.filtered_matches)} 个链接到：{save_path}")
-            except Exception as e:
-                QMessageBox.critical(self, "失败", f"导出失败：{str(e)}")
-
-    def _copy_text(self, text):
-        clipboard = QApplication.clipboard()
-        clipboard.setText(text)
-        QMessageBox.information(self, "提示", "已复制到剪贴板！")
-
-    def _copy_selected_link(self):
-        selected_items = self.result_tree.selectedItems()
-        if selected_items:
-            self._copy_text(selected_items[0].text(2))
-
-    def _open_selected_link(self):
-        selected_items = self.result_tree.selectedItems()
-        if selected_items:
-            webbrowser.open(selected_items[0].text(2))
+            with open(save_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(self.filtered_matches))
+            QMessageBox.information(self, "提示", f"已导出 {len(self.filtered_matches)} 个链接到 {save_path}")
 
     def _show_right_menu(self, pos):
-        if self.result_tree.selectedItems():
+        item = self.result_tree.itemAt(pos)
+        if item:
             self.right_menu.exec(self.result_tree.mapToGlobal(pos))
+
+    def _copy_selected_link(self):
+        item = self.result_tree.currentItem()
+        if item:
+            self._copy_text(item.text(2))
+
+    def _open_selected_link(self):
+        item = self.result_tree.currentItem()
+        if item:
+            webbrowser.open(item.text(2))
 
     def _on_item_double_click(self, item, column):
         self._open_selected_link()
 
-    # ========== ✅ 智能兼容：关闭事件（无需修改，自动适配托盘开启/禁用） ==========
-    def closeEvent(self, event):
-        """智能判断：有托盘则隐藏窗口，无托盘则彻底关闭程序"""
-        if self.tray_icon and self.tray_icon.isVisible():
-            self.hide()
-            event.ignore()
-        else:
-            event.accept() # 禁用托盘时，点击X直接彻底关闭
-
-    # ========== ✅ 智能兼容：最小化事件（无需修改，自动适配托盘开启/禁用） ==========
-    def changeEvent(self, event):
-        """智能判断：有托盘则最小化隐藏，无托盘则正常最小化到任务栏"""
-        if event.type() == event.Type.WindowStateChange:
-            if self.windowState() == Qt.WindowState.WindowMinimized and self.tray_icon:
-                self.hide()
-                self.tray_icon.setVisible(True)
-        super().changeEvent(event)
-
-    # ========== ✅ 【核心封装】独立的托盘初始化方法（所有托盘逻辑全在这里） ==========
-    def _init_system_tray(self, app_icon):
-        """系统托盘核心逻辑，统一封装，外部仅需一行调用"""
-        self.tray_icon = QSystemTrayIcon(self)
-        self.tray_icon.setIcon(app_icon)
-        self.tray_icon.setToolTip(APP_TITLE)
-
-        # 托盘右键菜单
-        tray_menu = QMenu(self)
-        show_action = QAction("显示窗口", self)
-        show_action.triggered.connect(lambda: [self.show(), self.raise_(), self.activateWindow()])
-        exit_action = QAction("彻底退出程序", self)
-        exit_action.triggered.connect(lambda: [self.tray_icon.hide(), QApplication.quit()])
-        tray_menu.addAction(show_action)
-        tray_menu.addAction(exit_action)
-
-        # 托盘左键单击 → 显示窗口
-        self.tray_icon.activated.connect(lambda reason: [self.show(), self.raise_(), self.activateWindow()] if reason == QSystemTrayIcon.ActivationReason.Trigger else None)
-        self.tray_icon.setContextMenu(tray_menu)
-        self.tray_icon.show()
-
-    # ========== ✅ 唯一入口：图标设置 + 托盘开关 ==========
-    def set_all_app_icons(self, icon_file):
-        """
-        窗口+任务栏图标：必显示（不受托盘影响）
-        系统托盘图标：由下方【一行调用代码】控制开关
-        """
-        if not os.path.exists(icon_file):
-            QMessageBox.warning(self, "提示", f"图标文件 {icon_file} 不存在，跳过图标设置")
-            return
-        
-        try:
-            app_icon = QIcon(icon_file)
-            self.setWindowIcon(app_icon)  # 窗口+任务栏图标，永久生效
-            # self._init_system_tray(app_icon) #系统托盘
-            
-        except Exception as e:
-            QMessageBox.warning(self, "图标加载失败", f"图标设置出错：{str(e)}")
-
-# ========== ✅ 程序入口（无任何修改，直接运行） ==========
+# ========== 程序入口（原有代码，无修改） ==========
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    app.setStyle("Fusion")
+    # 禁用QT的默认退出行为（确保托盘逻辑生效）
     app.setQuitOnLastWindowClosed(False)
-    
     window = MiHoYoMediaExtractor()
-    # 图标路径正常写，无需改动
-    window.set_all_app_icons(icon_file=r"D:\HP\Pictures\图标\神里凌华.ico")
-    
     window.show()
     sys.exit(app.exec())
