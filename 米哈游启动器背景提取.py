@@ -22,6 +22,8 @@ from PyQt6.QtGui import QDrag, QPixmap, QFont, QCursor, QColor, QPalette, QActio
 IMAGE_EXTS = {'jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'}  # 扩展图片格式
 VIDEO_EXTS = {'webm', 'mp4', 'mkv'}  # 扩展视频格式
 
+ICON = "D:\HP\Pictures\图标\神里凌华_64X64.ico"
+
 # 预设路径（和HTML中一致）
 DEFAULT_PATHS = {
     "国服": os.path.expandvars(r"%USERPROFILE%\AppData\Roaming\miHoYo\HYP\1_1\fedata\Cache\Cache_Data") if platform.system() == "Windows" 
@@ -94,6 +96,9 @@ class MiHoYoMediaExtractor(QMainWindow):
     
     def __init__(self):
         super().__init__()
+        # True为打开托盘，False为关闭托盘
+        self.show_tray_icon = False
+        self.setWindowIcon(QIcon(ICON))
         self.setWindowTitle(APP_TITLE)
         self.setGeometry(100, 100, 1200, 800)
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowCloseButtonHint | Qt.WindowType.WindowMinimizeButtonHint)
@@ -168,7 +173,8 @@ class MiHoYoMediaExtractor(QMainWindow):
         # 创建托盘图标（可替换为自定义图标，这里用默认样式）
         self.tray_icon = QSystemTrayIcon(self)
         # 兼容不同平台的图标（如果没有自定义图标，用QT默认）
-        self.tray_icon.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
+        # self.tray_icon.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
+        self.tray_icon.setIcon(QIcon(ICON))
         
         # 创建托盘菜单
         tray_menu = QMenu(self)
@@ -189,8 +195,11 @@ class MiHoYoMediaExtractor(QMainWindow):
         # 托盘点击事件（左键显示窗口）
         self.tray_icon.activated.connect(self._on_tray_click)
         
-        # 显示托盘（如果要禁用托盘，注释这一行即可）
-        # self.tray_icon.show()
+        # 托盘控制（如果要禁用托盘，注释这一行即可）
+        if self.show_tray_icon:
+            self.tray_icon.show()
+        else:
+            self.tray_icon.hide()
 
     # ========== 新增：托盘点击事件 ==========
     def _on_tray_click(self, reason):
